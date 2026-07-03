@@ -1,0 +1,6 @@
+node_modules/
+.env
+findsy-backend/.env
+findsy-backend/node_modules/
+findsy-backend/db/
+findsy-backend/uploads/
