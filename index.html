@@ -512,11 +512,15 @@ async function tryUnlock(){
   document.getElementById('passErr').textContent = '';
 
   try{
+    console.log("1. Login started");
+
     const res = await fetch(API_BASE + '/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
     });
+
+    console.log("2. Status:", res.status);
 
     if(!res.ok){
       document.getElementById('passErr').textContent = 'Incorrect username or password.';
@@ -524,13 +528,20 @@ async function tryUnlock(){
     }
 
     const data = await res.json();
+    console.log("3. Response:", data);
+
     setToken(data.token);
+    console.log("4. Token saved");
+
     document.getElementById('adminGate').classList.add('hidden');
     document.getElementById('adminDash').classList.remove('hidden');
-    document.getElementById('passErr').textContent = '';
+    console.log("5. Dashboard opened");
+
     await loadProducts();
+
   }catch(e){
-    document.getElementById('passErr').textContent = 'Incorrect username or password.';
+    console.error(e);
+    document.getElementById('passErr').textContent = e.message;
   }
 }
 
