@@ -1,5 +1,4 @@
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
 const db = require('../db');
 const { requireAdmin } = require('../middleware/auth');
 
@@ -23,138 +22,69 @@ function rowToProduct(row) {
 function validateProductBody(body, { partial = false } = {}) {
   const errors = [];
   const required = ['title', 'image', 'link'];
-
   if (!partial) {
     for (const field of required) {
-      if (!body[field] || String(body[field]).trim() === '') {
-        errors.push(`"${field}" is required`);
-      }
+      if (!body[field] || String(body[field]).trim() === '') errors.push(`"${field}" is required`);
     }
   }
-
   if (body.link) {
-    try {
-      new URL(body.link);
-    } catch {
-      errors.push('"link" must be a valid URL');
-    }
+    try { new URL(body.link); } catch { errors.push('"link" must be a valid URL'); }
   }
-
   return errors;
 }
 
-// GET /api/products — public, supports ?category=&search=&limit=&offset=
-router.get('/', (req, res) => {
-  const { category, search, limit = 100, offset = 0 } = req.query;
+router.get('/', async (req,res)=>{try{
+ const {category,search}=req.query;
+ const limit=Number(req.query.limit)||100, offset=Number(req.query.offset)||0;
+ const cond=[], vals=[]; let i=1;
+ if(category&&category!=='All'){cond.push(`category=$${i++}`);vals.push(category);}
+ if(search){cond.push(`(title ILIKE $${i} OR description ILIKE $${i+1})`);const t=`%${search}%`;vals.push(t,t);i+=2;}
+ let q='SELECT * FROM products';
+ if(cond.length) q+=' WHERE '+cond.join(' AND ');
+ q+=` ORDER BY created_at DESC LIMIT $${i} OFFSET $${i+1}`;
+ vals.push(limit,offset);
+ const products=await db.query(q,vals);
+ const ccond=[], cvals=[]; let ci=1;
+ if(category&&category!=='All'){ccond.push(`category=$${ci++}`);cvals.push(category);}
+ if(search){ccond.push(`(title ILIKE $${ci} OR description ILIKE $${ci+1})`);const t=`%${search}%`;cvals.push(t,t);}
+ let cq='SELECT COUNT(*) AS count FROM products';
+ if(ccond.length) cq+=' WHERE '+ccond.join(' AND ');
+ const count=await db.query(cq,cvals);
+ res.json({products:products.rows.map(rowToProduct),total:Number(count.rows[0].count)});
+}catch(e){console.error(e);res.status(500).json({error:'Failed to fetch products'});}});
 
-  let query = 'SELECT * FROM products WHERE 1=1';
-  const params = [];
+router.get('/categories', async(req,res)=>{try{
+ const r=await db.query('SELECT DISTINCT category FROM products ORDER BY category ASC');
+ res.json({categories:r.rows.map(x=>x.category)});
+}catch(e){console.error(e);res.status(500).json({error:'Failed to fetch categories'});}});
 
-  if (category && category !== 'All') {
-    query += ' AND category = ?';
-    params.push(category);
-  }
+router.get('/:id', async(req,res)=>{try{
+ const r=await db.query('SELECT * FROM products WHERE id=$1',[req.params.id]);
+ if(!r.rows.length) return res.status(404).json({error:'Product not found'});
+ res.json(rowToProduct(r.rows[0]));
+}catch(e){console.error(e);res.status(500).json({error:'Failed to fetch product'});}});
 
-  if (search) {
-    query += ' AND (title LIKE ? OR description LIKE ?)';
-    const term = `%${search}%`;
-    params.push(term, term);
-  }
+router.post('/', requireAdmin, async(req,res)=>{try{
+ const b=req.body||{}; const errors=validateProductBody(b); if(errors.length)return res.status(400).json({errors});
+ const r=await db.query(`INSERT INTO products(title,image,link,price,old_price,category,description) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+ [b.title.trim(),b.image.trim(),b.link.trim(),b.price?String(b.price).trim():null,b.oldPrice?String(b.oldPrice).trim():null,b.category?String(b.category).trim():'General',b.desc?String(b.desc).trim():null]);
+ res.status(201).json(rowToProduct(r.rows[0]));
+}catch(e){console.error(e);res.status(500).json({error:'Failed to create product'});}});
 
-  query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
-  params.push(Number(limit), Number(offset));
+router.put('/:id', requireAdmin, async(req,res)=>{try{
+ const ex=await db.query('SELECT * FROM products WHERE id=$1',[req.params.id]);
+ if(!ex.rows.length)return res.status(404).json({error:'Product not found'});
+ const existing=ex.rows[0], b=req.body||{}; const errors=validateProductBody(b,{partial:true}); if(errors.length)return res.status(400).json({errors});
+ const u={title:b.title!==undefined?String(b.title).trim():existing.title,image:b.image!==undefined?String(b.image).trim():existing.image,link:b.link!==undefined?String(b.link).trim():existing.link,price:b.price!==undefined?String(b.price).trim():existing.price,oldPrice:b.oldPrice!==undefined?String(b.oldPrice).trim():existing.old_price,category:b.category!==undefined?String(b.category).trim():existing.category,desc:b.desc!==undefined?String(b.desc).trim():existing.description};
+ const r=await db.query(`UPDATE products SET title=$1,image=$2,link=$3,price=$4,old_price=$5,category=$6,description=$7,updated_at=NOW() WHERE id=$8 RETURNING *`,
+ [u.title,u.image,u.link,u.price,u.oldPrice,u.category,u.desc,req.params.id]);
+ res.json(rowToProduct(r.rows[0]));
+}catch(e){console.error(e);res.status(500).json({error:'Failed to update product'});}});
 
-  const rows = db.prepare(query).all(...params);
-  const total = db
-    .prepare('SELECT COUNT(*) as count FROM products')
-    .get().count;
+router.delete('/:id', requireAdmin, async(req,res)=>{try{
+ const r=await db.query('DELETE FROM products WHERE id=$1 RETURNING id',[req.params.id]);
+ if(!r.rows.length)return res.status(404).json({error:'Product not found'});
+ res.json({success:true,id:r.rows[0].id});
+}catch(e){console.error(e);res.status(500).json({error:'Failed to delete product'});}});
 
-  res.json({
-    products: rows.map(rowToProduct),
-    total,
-  });
-});
-
-// GET /api/products/categories — distinct category list for the chip bar
-router.get('/categories', (req, res) => {
-  const rows = db
-    .prepare('SELECT DISTINCT category FROM products ORDER BY category ASC')
-    .all();
-  res.json({ categories: rows.map((r) => r.category) });
-});
-
-// GET /api/products/:id — public
-router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Product not found' });
-  res.json(rowToProduct(row));
-});
-
-// POST /api/products — admin only
-router.post('/', requireAdmin, (req, res) => {
-  const body = req.body || {};
-  const errors = validateProductBody(body);
-  if (errors.length) return res.status(400).json({ errors });
-
-  const now = Date.now();
-  const id = 'p_' + uuidv4();
-
-  db.prepare(
-    `INSERT INTO products (id, title, image, link, price, old_price, category, description, created_at, updated_at)
-     VALUES (@id, @title, @image, @link, @price, @oldPrice, @category, @desc, @createdAt, @updatedAt)`
-  ).run({
-    id,
-    title: body.title.trim(),
-    image: body.image.trim(),
-    link: body.link.trim(),
-    price: body.price ? String(body.price).trim() : null,
-    oldPrice: body.oldPrice ? String(body.oldPrice).trim() : null,
-    category: body.category ? String(body.category).trim() : 'General',
-    desc: body.desc ? String(body.desc).trim() : null,
-    createdAt: now,
-    updatedAt: now,
-  });
-
-  const row = db.prepare('SELECT * FROM products WHERE id = ?').get(id);
-  res.status(201).json(rowToProduct(row));
-});
-
-// PUT /api/products/:id — admin only
-router.put('/:id', requireAdmin, (req, res) => {
-  const existing = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Product not found' });
-
-  const body = req.body || {};
-  const errors = validateProductBody(body, { partial: true });
-  if (errors.length) return res.status(400).json({ errors });
-
-  const updated = {
-    title: body.title !== undefined ? String(body.title).trim() : existing.title,
-    image: body.image !== undefined ? String(body.image).trim() : existing.image,
-    link: body.link !== undefined ? String(body.link).trim() : existing.link,
-    price: body.price !== undefined ? String(body.price).trim() : existing.price,
-    oldPrice: body.oldPrice !== undefined ? String(body.oldPrice).trim() : existing.old_price,
-    category: body.category !== undefined ? String(body.category).trim() : existing.category,
-    desc: body.desc !== undefined ? String(body.desc).trim() : existing.description,
-  };
-
-  db.prepare(
-    `UPDATE products SET
-      title = @title, image = @image, link = @link, price = @price,
-      old_price = @oldPrice, category = @category, description = @desc,
-      updated_at = @updatedAt
-     WHERE id = @id`
-  ).run({ ...updated, updatedAt: Date.now(), id: req.params.id });
-
-  const row = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-  res.json(rowToProduct(row));
-});
-
-// DELETE /api/products/:id — admin only
-router.delete('/:id', requireAdmin, (req, res) => {
-  const result = db.prepare('DELETE FROM products WHERE id = ?').run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Product not found' });
-  res.json({ success: true, id: req.params.id });
-});
-
-module.exports = router;
+module.exports=router;
